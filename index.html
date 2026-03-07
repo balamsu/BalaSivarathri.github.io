@@ -398,7 +398,7 @@
                                 aria-label="Google Scholar">Google Scholar</a>
                             <a href="https://www.researchgate.net/profile/Bala-Subramanyam-Sivarathri?ev=hdr_xprf"
                                 target="_blank" aria-label="ResearchGate">ResearchGate</a>
-                            <a href="mailto:bs2441@msstate.edu" aria-label="Email">Email Me</a>
+                            <a href="mailto:bs2437@msstate.edu" aria-label="Email">Email Me</a>
                         </div>
                     </div>
                     <form class="contact-form" id="contactForm" action="#" method="POST">
@@ -431,7 +431,39 @@
     </footer>
 
     <!-- JS Functionality -->
-    <script src="script.js" defer></script>
-</body>
+        <script>
+        // Mobile menu toggle
+        const menuToggle = document.getElementById('mobile-menu');
+        const navLinks = document.getElementById('nav-links');
+        if (menuToggle) {
+            menuToggle.addEventListener('click', () => navLinks.classList.toggle('active'));
+            menuToggle.addEventListener('keydown', (e) => {
+                if (e.key === 'Enter' || e.key === ' ') navLinks.classList.toggle('active');
+            });
+        }
+        document.querySelectorAll('.nav-links a').forEach(link => {
+            link.addEventListener('click', () => navLinks.classList.remove('active'));
+        });
 
+        // Scroll fade-in
+        const observer = new IntersectionObserver((entries) => {
+            entries.forEach(entry => {
+                if (entry.isIntersecting) { entry.target.classList.add('visible'); observer.unobserve(entry.target); }
+            });
+        }, { threshold: 0.1 });
+        document.querySelectorAll('.fade-in-up').forEach(el => observer.observe(el));
+
+        // Contact form -> mailto
+        const form = document.getElementById('contactForm');
+        if (form) {
+            form.addEventListener('submit', (e) => {
+                e.preventDefault();
+                const name = document.getElementById('name').value;
+                const email = document.getElementById('email').value;
+                const message = document.getElementById('message').value;
+                window.location.href = `mailto:bs2437@msstate.edu?subject=Collaboration%20Inquiry%20from%20${encodeURIComponent(name)}&body=${encodeURIComponent(message)}%0A%0AReply%20to%3A%20${encodeURIComponent(email)}`;
+            });
+        }
+    </script>
+</body>
 </html>
