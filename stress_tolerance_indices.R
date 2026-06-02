@@ -1,5 +1,5 @@
 # ============================================================
-#  Plant Stress Tolerance Indices — Analysis Script
+#  Plant Stress Tolerance Indices — Multi-Trait Analysis
 #  Author : Bala Subramanyam Sivarathri
 #  Contact: balasubramanyamsivarathri@gmail.com
 #  Ref    : Fernandez (1992), Fischer & Maurer (1978),
@@ -7,10 +7,12 @@
 # ============================================================
 
 # ---- 0. Required packages ----------------------------------
-pkgs <- c("readxl", "ggplot2", "reshape2", "ggcorrplot", "dplyr", "ggrepel")
+pkgs <- c("readxl", "openxlsx", "ggplot2", "reshape2",
+          "ggcorrplot", "dplyr", "ggrepel")
 for (p in pkgs) if (!requireNamespace(p, quietly = TRUE)) install.packages(p)
 
 library(readxl)
+library(openxlsx)
 library(ggplot2)
 library(reshape2)
 library(ggcorrplot)
@@ -18,183 +20,240 @@ library(dplyr)
 library(ggrepel)
 
 # ============================================================
-# 1. INPUT DATA — read from Excel
-#    Default file : sample_data.xlsx  (sheet "Data")
-#    Required columns: Genotype | Yp | Ys
-#    • Yp = yield / trait value in the non-stress environment
-#    • Ys = yield / trait value in the stress environment
-#    Change EXCEL_FILE or SHEET_NAME below if needed.
+# 1. INPUT — read from Excel
+#    Column naming rule:  TraitName_Yp  |  TraitName_Ys
+#    Add as many trait pairs as needed; all are detected automatically.
 # ============================================================
 EXCEL_FILE <- "sample_data.xlsx"
 SHEET_NAME <- "Data"
 
-if (!file.exists(EXCEL_FILE)) {
+if (!file.exists(EXCEL_FILE))
   stop(paste("Excel file not found:", EXCEL_FILE,
-             "\nMake sure sample_data.xlsx is in your working directory:",
-             getwd()))
+             "\nWorking directory:", getwd()))
+
+raw  <- read_excel(EXCEL_FILE, sheet = SHEET_NAME, skip = 3)  # skip title + trait-group rows
+data <- as.data.frame(raw)
+data <- data[complete.cases(data["Genotype"]), ]               # drop empty buffer rows
+
+# --- auto-detect trait pairs (columns ending in _Yp with a matching _Ys) ---
+yp_cols <- grep("_Yp$", colnames(data), value = TRUE)
+ys_cols <- sub("_Yp$", "_Ys", yp_cols)
+valid   <- ys_cols %in% colnames(data)
+
+if (!any(valid))
+  stop("No valid trait pairs found. Columns must follow the pattern TraitName_Yp / TraitName_Ys.")
+
+yp_cols <- yp_cols[valid]
+ys_cols <- ys_cols[valid]
+traits  <- sub("_Yp$", "", yp_cols)
+
+# convert all trait columns to numeric
+for (col in c(yp_cols, ys_cols))
+  data[[col]] <- suppressWarnings(as.numeric(data[[col]]))
+
+cat(sprintf("\nLoaded %d genotypes | %d traits detected: %s\n\n",
+            nrow(data), length(traits), paste(traits, collapse = ", ")))
+
+# ============================================================
+# 2. FUNCTION — compute all 8 indices for one trait
+# ============================================================
+compute_indices <- function(Genotype, Yp, Ys) {
+  Yp_bar <- mean(Yp, na.rm = TRUE)
+  Ys_bar <- mean(Ys, na.rm = TRUE)
+
+  df <- data.frame(
+    Genotype = Genotype,
+    Yp       = Yp,
+    Ys       = Ys,
+    TOL      = Yp - Ys,
+    MP       = (Yp + Ys) / 2,
+    GMP      = sqrt(Yp * Ys),
+    STI      = (Yp * Ys) / (Yp_bar^2),
+    SSI      = (1 - Ys / Yp) / (1 - Ys_bar / Yp_bar),
+    YSI      = Ys / Yp,
+    HM       = (2 * Yp * Ys) / (Yp + Ys),
+    YI       = Ys / Ys_bar
+  )
+  df$Rank_STI <- rank(-df$STI, na.last = "keep")
+  df$Quadrant <- with(df, case_when(
+    Yp >= Yp_bar & Ys >= Ys_bar ~ "Q1: Tolerant & High-yielding",
+    Yp <  Yp_bar & Ys >= Ys_bar ~ "Q2: Tolerant & Low-yielding",
+    Yp <  Yp_bar & Ys <  Ys_bar ~ "Q3: Sensitive & Low-yielding",
+    Yp >= Yp_bar & Ys <  Ys_bar ~ "Q4: Sensitive & High-yielding"
+  ))
+  attr(df, "Yp_bar") <- Yp_bar
+  attr(df, "Ys_bar") <- Ys_bar
+  df
 }
 
-raw  <- read_excel(EXCEL_FILE, sheet = SHEET_NAME, skip = 2)   # skip title rows
-data <- raw[, c("Genotype", "Yp", "Ys")]                        # keep only the three required columns
-data <- data[complete.cases(data[, c("Yp","Ys")]), ]            # drop empty buffer rows
-data <- as.data.frame(data)
-data$Yp <- as.numeric(data$Yp)
-data$Ys <- as.numeric(data$Ys)
+# ============================================================
+# 3. RUN FOR ALL TRAITS
+# ============================================================
+idx_cols   <- c("TOL","MP","GMP","STI","SSI","YSI","HM","YI")
+results    <- list()  # one data.frame per trait
 
-cat(sprintf("\nLoaded %d genotypes from '%s' (sheet: %s)\n\n",
-            nrow(data), EXCEL_FILE, SHEET_NAME))
+for (trait in traits) {
+  Yp   <- data[[paste0(trait, "_Yp")]]
+  Ys   <- data[[paste0(trait, "_Ys")]]
+  res  <- compute_indices(data$Genotype, Yp, Ys)
+  results[[trait]] <- res
+
+  cat(sprintf("══════════════ %s ══════════════\n", trait))
+  cat(sprintf("  Mean Yp: %.3f  |  Mean Ys: %.3f\n",
+              attr(res,"Yp_bar"), attr(res,"Ys_bar")))
+  print(res[order(res$Rank_STI),
+            c("Genotype","Yp","Ys","STI","GMP","SSI","YSI","Rank_STI","Quadrant")],
+        digits = 3, row.names = FALSE)
+  cat("\n")
+}
 
 # ============================================================
-# 2. COMPUTE STRESS TOLERANCE INDICES
+# 4. CROSS-TRAIT STI SUMMARY TABLE
 # ============================================================
-
-# Population means
-Yp_bar <- mean(data$Yp)
-Ys_bar <- mean(data$Ys)
-
-data <- data %>%
-  mutate(
-    # --- Rosielle & Hamblin (1981) ---
-    TOL = Yp - Ys,                              # Tolerance
-    MP  = (Yp + Ys) / 2,                        # Mean Productivity
-
-    # --- Fernandez (1992) ---
-    GMP = sqrt(Yp * Ys),                        # Geometric Mean Productivity
-    STI = (Yp * Ys) / (Yp_bar^2),              # Stress Tolerance Index
-
-    # --- Fischer & Maurer (1978) ---
-    SSI = (1 - (Ys / Yp)) / (1 - (Ys_bar / Yp_bar)),  # Stress Susceptibility Index
-
-    # --- Bouslama & Schapaugh (1984) ---
-    YSI = Ys / Yp,                              # Yield Stability Index
-
-    # --- Harmonic Mean (Kristin et al. 1993) ---
-    HM  = (2 * Yp * Ys) / (Yp + Ys),
-
-    # --- Yield Index ---
-    YI  = Ys / Ys_bar                           # Yield Index
-  )
-
-# ============================================================
-# 3. PRINT RESULTS TABLE
-# ============================================================
-cat("\n========== Stress Tolerance Indices ==========\n")
-print(data, digits = 3, row.names = FALSE)
-
-cat("\n--- Population means ---\n")
-cat(sprintf("  Mean Yp (non-stress) : %.3f\n", Yp_bar))
-cat(sprintf("  Mean Ys (stress)     : %.3f\n\n", Ys_bar))
-
-# ============================================================
-# 4. RANKING (based on STI — higher = more tolerant)
-# ============================================================
-data$Rank_STI <- rank(-data$STI)
-data$Rank_GMP <- rank(-data$GMP)
-data$Rank_MP  <- rank(-data$MP)
-
-cat("--- Genotype rankings by STI (1 = most tolerant) ---\n")
-print(data[order(data$Rank_STI), c("Genotype","STI","GMP","MP","SSI","YSI","Rank_STI")],
-      digits = 3, row.names = FALSE)
+sti_summary <- Reduce(function(a, b) merge(a, b, by = "Genotype", all = TRUE),
+  lapply(traits, function(t) {
+    d <- results[[t]][, c("Genotype","STI")]
+    colnames(d)[2] <- t
+    d
+  })
+)
+cat("══════════ Cross-Trait STI Summary ══════════\n")
+print(sti_summary, digits = 3, row.names = FALSE)
 
 # ============================================================
 # 5. VISUALISATIONS
 # ============================================================
 
-# 5a. Bar chart of all indices (scaled 0–1 for comparability)
-idx_cols <- c("TOL","MP","GMP","STI","SSI","YSI","HM","YI")
+# ---- helper: min-max scale --------------------------------------------------
+minmax <- function(x) {
+  r <- max(x, na.rm = TRUE) - min(x, na.rm = TRUE)
+  if (r == 0) return(rep(0, length(x)))
+  (x - min(x, na.rm = TRUE)) / r
+}
 
-scaled <- data %>%
-  select(Genotype, all_of(idx_cols)) %>%
-  mutate(across(all_of(idx_cols), ~ (.x - min(.x)) / (max(.x) - min(.x))))
+# ---- 5a. Per-trait plots ----------------------------------------------------
+for (trait in traits) {
+  res    <- results[[trait]]
+  Yp_bar <- attr(res, "Yp_bar")
+  Ys_bar <- attr(res, "Ys_bar")
 
-long <- melt(scaled, id.vars = "Genotype",
-             variable.name = "Index", value.name = "Value")
+  # Biplot: Yp vs Ys coloured by STI
+  p_bi <- ggplot(res, aes(x = Yp, y = Ys, colour = STI, label = Genotype)) +
+    geom_point(size = 4) +
+    geom_text_repel(size = 3.2) +
+    scale_colour_gradient(low = "#d73027", high = "#1a9850") +
+    geom_vline(xintercept = Yp_bar, linetype = "dashed", colour = "grey50") +
+    geom_hline(yintercept = Ys_bar, linetype = "dashed", colour = "grey50") +
+    labs(title    = paste(trait, "— Yp vs Ys Biplot"),
+         subtitle = "Dashed lines = population means | green = high STI",
+         x = paste(trait, "(Non-Stress)"),
+         y = paste(trait, "(Stress)"),
+         colour = "STI") +
+    theme_bw(base_size = 11)
 
-p_bar <- ggplot(long, aes(x = Genotype, y = Value, fill = Index)) +
+  ggsave(paste0(trait, "_biplot.png"), p_bi, width = 7, height = 5.5, dpi = 150)
+
+  # Lollipop: STI ranking
+  p_lol <- ggplot(res, aes(x = reorder(Genotype, STI), y = STI)) +
+    geom_segment(aes(xend = Genotype, yend = 0), colour = "grey65") +
+    geom_point(aes(colour = STI), size = 5) +
+    scale_colour_gradient(low = "#d73027", high = "#1a9850") +
+    coord_flip() +
+    labs(title  = paste(trait, "— STI Ranking"),
+         x = "Genotype", y = "STI", colour = "STI") +
+    theme_bw(base_size = 11)
+
+  ggsave(paste0(trait, "_lollipop.png"), p_lol, width = 6, height = 5, dpi = 150)
+}
+
+# ---- 5b. Scaled bar chart — all indices for each genotype (faceted by trait) ---
+long_all <- do.call(rbind, lapply(traits, function(t) {
+  df <- results[[t]] %>%
+    select(Genotype, all_of(idx_cols)) %>%
+    mutate(across(all_of(idx_cols), minmax))
+  melt(df, id.vars = "Genotype", variable.name = "Index", value.name = "Value") %>%
+    mutate(Trait = t)
+}))
+
+p_facet <- ggplot(long_all, aes(x = Genotype, y = Value, fill = Index)) +
   geom_bar(stat = "identity", position = "dodge") +
   scale_fill_brewer(palette = "Set2") +
-  labs(title    = "Scaled Stress Tolerance Indices by Genotype",
-       subtitle = "All indices normalised to [0, 1] for visual comparison",
-       x = "Genotype", y = "Scaled Index Value", fill = "Index") +
-  theme_bw(base_size = 12) +
-  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+  facet_wrap(~ Trait, ncol = 2) +
+  labs(title    = "Scaled Stress Tolerance Indices — All Traits",
+       subtitle = "Indices normalised to [0,1] within each trait",
+       x = "Genotype", y = "Scaled Value", fill = "Index") +
+  theme_bw(base_size = 10) +
+  theme(axis.text.x  = element_text(angle = 45, hjust = 1),
+        strip.text    = element_text(face = "bold"))
 
-print(p_bar)
-ggsave("sti_bar_chart.png", p_bar, width = 10, height = 5, dpi = 150)
+ggsave("all_traits_bar_chart.png", p_facet,
+       width = 5 * min(length(traits), 2), height = 4 * ceiling(length(traits) / 2),
+       dpi = 150)
 
-# 5b. Biplot: Yp vs Ys coloured by STI
-p_biplot <- ggplot(data, aes(x = Yp, y = Ys, colour = STI, label = Genotype)) +
-  geom_point(size = 4) +
-  geom_text_repel(size = 3.5) +
-  scale_colour_gradient(low = "#d73027", high = "#1a9850") +
-  geom_vline(xintercept = Yp_bar, linetype = "dashed", colour = "grey50") +
-  geom_hline(yintercept = Ys_bar, linetype = "dashed", colour = "grey50") +
-  labs(title    = "Yp vs Ys Biplot — Stress Tolerance Index (STI)",
-       subtitle = "Dashed lines = population means; green = high STI",
-       x = "Yield under Non-Stress (Yp)",
-       y = "Yield under Stress (Ys)",
-       colour = "STI") +
-  theme_bw(base_size = 12)
+# ---- 5c. Cross-trait STI heatmap -------------------------------------------
+sti_mat <- as.data.frame(sti_summary)
+rownames(sti_mat) <- sti_mat$Genotype
+sti_mat$Genotype  <- NULL
+sti_long <- melt(as.matrix(sti_mat), varnames = c("Genotype","Trait"),
+                 value.name = "STI")
 
-print(p_biplot)
-ggsave("sti_biplot.png", p_biplot, width = 7, height = 6, dpi = 150)
+p_heat <- ggplot(sti_long, aes(x = Trait, y = Genotype, fill = STI)) +
+  geom_tile(colour = "white", linewidth = 0.5) +
+  geom_text(aes(label = round(STI, 2)), size = 3) +
+  scale_fill_gradient2(low = "#d73027", mid = "white", high = "#1a9850",
+                       midpoint = median(sti_long$STI, na.rm = TRUE)) +
+  labs(title = "STI Heatmap — All Traits × All Genotypes",
+       x = "Trait", y = "Genotype", fill = "STI") +
+  theme_bw(base_size = 11) +
+  theme(axis.text.x = element_text(angle = 30, hjust = 1))
 
-# 5c. Correlation heatmap among indices
-cor_mat <- cor(data[, idx_cols], use = "complete.obs")
-
-p_corr <- ggcorrplot(cor_mat,
-  method    = "circle",
-  type      = "lower",
-  lab       = TRUE,
-  lab_size  = 3,
-  colors    = c("#d73027", "white", "#1a9850"),
-  title     = "Correlation Among Stress Tolerance Indices",
-  ggtheme   = theme_bw(base_size = 11))
-
-print(p_corr)
-ggsave("sti_correlation.png", p_corr, width = 7, height = 6, dpi = 150)
-
-# 5d. STI lollipop chart
-p_lollipop <- ggplot(data, aes(x = reorder(Genotype, STI), y = STI)) +
-  geom_segment(aes(xend = Genotype, yend = 0), colour = "grey60") +
-  geom_point(aes(colour = STI), size = 5) +
-  scale_colour_gradient(low = "#d73027", high = "#1a9850") +
-  coord_flip() +
-  labs(title  = "Stress Tolerance Index (STI) — Genotype Ranking",
-       x = "Genotype", y = "STI", colour = "STI") +
-  theme_bw(base_size = 12)
-
-print(p_lollipop)
-ggsave("sti_lollipop.png", p_lollipop, width = 7, height = 5, dpi = 150)
+ggsave("cross_trait_STI_heatmap.png", p_heat, width = 8, height = 6, dpi = 150)
 
 # ============================================================
-# 6. CLASSIFICATION (quadrant method — Fernandez 1992)
-#    Q1 high Yp & high Ys → tolerant & high yielding (ideal)
-#    Q2 low  Yp & high Ys → tolerant but low yielding
-#    Q3 low  Yp & low  Ys → sensitive & low yielding
-#    Q4 high Yp & low  Ys → sensitive but high yielding under no-stress
+# 6. EXPORT RESULTS
 # ============================================================
-data <- data %>%
-  mutate(
-    Quadrant = case_when(
-      Yp >= Yp_bar & Ys >= Ys_bar ~ "Q1: Tolerant & High-yielding",
-      Yp <  Yp_bar & Ys >= Ys_bar ~ "Q2: Tolerant & Low-yielding",
-      Yp <  Yp_bar & Ys <  Ys_bar ~ "Q3: Sensitive & Low-yielding",
-      Yp >= Yp_bar & Ys <  Ys_bar ~ "Q4: Sensitive & High-yielding"
-    )
-  )
 
-cat("\n--- Fernandez (1992) Quadrant Classification ---\n")
-print(data[, c("Genotype","Yp","Ys","STI","Quadrant")],
-      row.names = FALSE)
+# --- 6a. Long-format CSV (all traits combined) ------------------------------
+long_csv <- do.call(rbind, lapply(traits, function(t) {
+  cbind(Trait = t, results[[t]])
+}))
+write.csv(long_csv, "stress_tolerance_results.csv", row.names = FALSE)
 
-# ============================================================
-# 7. EXPORT FULL RESULTS
-# ============================================================
-write.csv(data, "stress_tolerance_results.csv", row.names = FALSE)
-cat("\nResults saved to  : stress_tolerance_results.csv\n")
-cat("Plots saved to    : sti_bar_chart.png, sti_biplot.png,\n")
-cat("                    sti_correlation.png, sti_lollipop.png\n\n")
+# --- 6b. Excel workbook — one sheet per trait + cross-trait summary ---------
+wb_out <- createWorkbook()
+
+# header style helpers
+hs <- createStyle(fontColour = "#FFFFFF", fgFill = "#1a5e38",
+                  halign = "CENTER", textDecoration = "Bold", border = "TopBottomLeftRight")
+ds <- createStyle(border = "TopBottomLeftRight", halign = "CENTER")
+alt_fill <- createStyle(fgFill = "#f5f5f5", border = "TopBottomLeftRight", halign = "CENTER")
+
+for (trait in traits) {
+  addWorksheet(wb_out, trait)
+  df_out <- results[[trait]]
+  writeData(wb_out, trait, df_out, headerStyle = hs)
+  addStyle(wb_out, trait, ds,      rows = 2:(nrow(df_out)+1), cols = 1:ncol(df_out), gridExpand = TRUE)
+  addStyle(wb_out, trait, alt_fill, rows = seq(3, nrow(df_out)+1, 2), cols = 1:ncol(df_out), gridExpand = TRUE)
+  setColWidths(wb_out, trait, cols = 1:ncol(df_out), widths = "auto")
+}
+
+# Cross-trait summary sheet
+addWorksheet(wb_out, "Cross-Trait STI")
+writeData(wb_out, "Cross-Trait STI", sti_summary, headerStyle = hs)
+addStyle(wb_out, "Cross-Trait STI", ds, rows = 2:(nrow(sti_summary)+1),
+         cols = 1:ncol(sti_summary), gridExpand = TRUE)
+setColWidths(wb_out, "Cross-Trait STI", cols = 1:ncol(sti_summary), widths = "auto")
+
+saveWorkbook(wb_out, "stress_tolerance_results.xlsx", overwrite = TRUE)
+
+# ---- summary message -------------------------------------------------------
+cat("══════════════════════════════════════════════\n")
+cat("Results saved to:\n")
+cat("  stress_tolerance_results.csv\n")
+cat("  stress_tolerance_results.xlsx\n")
+cat(sprintf("Plots saved: %d trait biplots, %d lollipops,\n",
+            length(traits), length(traits)))
+cat("  all_traits_bar_chart.png, cross_trait_STI_heatmap.png\n\n")
 
 # ============================================================
 # INDEX FORMULAE REFERENCE
