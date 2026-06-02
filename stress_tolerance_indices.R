@@ -7,12 +7,10 @@
 # ============================================================
 
 # ---- 0. Required packages ----------------------------------
-if (!requireNamespace("ggplot2",  quietly = TRUE)) install.packages("ggplot2")
-if (!requireNamespace("reshape2", quietly = TRUE)) install.packages("reshape2")
-if (!requireNamespace("ggcorrplot", quietly = TRUE)) install.packages("ggcorrplot")
-if (!requireNamespace("dplyr",    quietly = TRUE)) install.packages("dplyr")
-if (!requireNamespace("ggrepel",  quietly = TRUE)) install.packages("ggrepel")
+pkgs <- c("readxl", "ggplot2", "reshape2", "ggcorrplot", "dplyr", "ggrepel")
+for (p in pkgs) if (!requireNamespace(p, quietly = TRUE)) install.packages(p)
 
+library(readxl)
 library(ggplot2)
 library(reshape2)
 library(ggcorrplot)
@@ -20,19 +18,31 @@ library(dplyr)
 library(ggrepel)
 
 # ============================================================
-# 1. INPUT DATA
-#    Yp = yield (or trait value) under non-stress (potential)
-#    Ys = yield (or trait value) under stress
-#    Replace with your actual genotype data.
+# 1. INPUT DATA — read from Excel
+#    Default file : sample_data.xlsx  (sheet "Data")
+#    Required columns: Genotype | Yp | Ys
+#    • Yp = yield / trait value in the non-stress environment
+#    • Ys = yield / trait value in the stress environment
+#    Change EXCEL_FILE or SHEET_NAME below if needed.
 # ============================================================
-data <- data.frame(
-  Genotype = c("G1",  "G2",  "G3",  "G4",  "G5",
-               "G6",  "G7",  "G8",  "G9",  "G10"),
-  Yp       = c(4.20,  3.85,  4.60,  3.50,  4.10,
-               5.00,  3.70,  4.80,  4.30,  3.95),   # non-stress environment
-  Ys       = c(2.80,  2.60,  2.50,  2.40,  3.00,
-               2.70,  2.20,  3.10,  2.90,  2.50)    # stress environment
-)
+EXCEL_FILE <- "sample_data.xlsx"
+SHEET_NAME <- "Data"
+
+if (!file.exists(EXCEL_FILE)) {
+  stop(paste("Excel file not found:", EXCEL_FILE,
+             "\nMake sure sample_data.xlsx is in your working directory:",
+             getwd()))
+}
+
+raw  <- read_excel(EXCEL_FILE, sheet = SHEET_NAME, skip = 2)   # skip title rows
+data <- raw[, c("Genotype", "Yp", "Ys")]                        # keep only the three required columns
+data <- data[complete.cases(data[, c("Yp","Ys")]), ]            # drop empty buffer rows
+data <- as.data.frame(data)
+data$Yp <- as.numeric(data$Yp)
+data$Ys <- as.numeric(data$Ys)
+
+cat(sprintf("\nLoaded %d genotypes from '%s' (sheet: %s)\n\n",
+            nrow(data), EXCEL_FILE, SHEET_NAME))
 
 # ============================================================
 # 2. COMPUTE STRESS TOLERANCE INDICES
